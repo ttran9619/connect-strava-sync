@@ -3,8 +3,10 @@ import datetime
 import yaml
 import os
 import argparse
-from typing import Dict, Any, Optional
+import json
+from typing import Dict, Any, Optional, List
 import garth
+import stravalib
 
 
 def load_secrets() -> dict:
@@ -56,6 +58,17 @@ def parse_args() -> argparse.Namespace:
         type=validate_date,
         help="Start date in ISO format (YYYY-MM-DD). If not provided, defaults to 7 days ago",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="If set, do not call Strava to update activities; only simulate and write summary",
+    )
+    parser.add_argument(
+        "--tolerance-seconds",
+        type=int,
+        default=10,
+        help="Matching tolerance in seconds when pairing Garmin and Strava activities (default: 10)",
+    )
     return parser.parse_args()
 
 
@@ -100,6 +113,58 @@ def login_to_garmin() -> garminconnect.Garmin:
     return client
 
 
+def login_to_strava() -> stravalib.Client:
+    """Login to Strava using stored credentials.
+
+    Returns:
+        stravalib.Client: Authenticated Strava client
+
+    Raises:
+        Exception: If authentication fails
+    """
+
+    secrets = load_secrets()
+
+    # If an access token is already stored, use it and skip the OAuth flow.
+    stored_access = secrets.get("strava-access-token")
+    if stored_access:
+        return stravalib.Client(access_token=stored_access)
+
+    # No stored token: proceed with authorization flow using app credentials.
+    app_access = secrets.get("strava-app-client-access-token")
+    client = stravalib.Client(access_token=app_access)
+
+    authorize_url = client.authorization_url(
+        client_id=secrets["strava-app-client-id"],
+        redirect_uri="http://127.0.0.1:5000/authorization",
+        scope=["read", "activity:read_all", "activity:write"],
+    )
+
+    print("Please visit this URL to authorize the application:")
+    print(authorize_url)
+    token_code = input(
+        "Press Enter after you've authorized the application and paste the code..."
+    )
+
+    token_response = client.exchange_code_for_token(
+        client_id=secrets["strava-app-client-id"],
+        client_secret=secrets["strava-app-client-secret"],
+        code=token_code,
+    )
+    # The token response above contains both an access_token and a refresh token.
+    access_token = token_response["access_token"]
+    refresh_token = token_response["refresh_token"]  # You'll need this in 6 hours
+    # Persist the new tokens into .secrets.yaml while preserving other keys.
+    secrets["strava-access-token"] = access_token
+    secrets["strava-refresh-token"] = refresh_token
+    with open(".secrets.yaml", "w") as f:
+        yaml.safe_dump(secrets, f, default_flow_style=False)
+
+    # Return a client authorized with the newly exchanged access token.
+    client = stravalib.Client(access_token=access_token)
+    return client
+
+
 def main() -> None:
     """Main function to fetch and display Garmin Connect activities."""
     args = parse_args()
@@ -108,43 +173,73 @@ def main() -> None:
     try:
         # Try using stored token first
         secrets = load_secrets()
-        client = None
+        garmin_client = None
 
         if "garth-token" in secrets:
             try:
                 print("Attempting to authenticate using saved token...")
-                client = garminconnect.Garmin()
-                client.login(secrets["garth-token"])
+                garmin_client = garminconnect.Garmin()
+                garmin_client.login(secrets["garth-token"])
             except Exception as e:
                 print(f"Token authentication failed: {e}")
                 print("Falling back to regular login...")
-                client = None
+                garmin_client = None
 
-        if client is None:
-            client = login_to_garmin()
+        if garmin_client is None:
+            garmin_client = login_to_garmin()
 
     except Exception as e:
         print(f"Login to Connect failed: {e}")
         return
 
+    strava_client = login_to_strava()
+
     # Get activities from start date until now
     today = datetime.date.today()
     start_date = (
-        args.start_date if args.start_date else today - datetime.timedelta(days=7)
+        args.start_date if args.start_date else today - datetime.timedelta(days=30)
     )
     try:
-        activities = client.get_activities_by_date(
+        garmin_activities = garmin_client.get_activities_by_date(
             start_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
         )
     except Exception as e:
         print(f"Failed to fetch activities: {e}")
         return
 
-    # Print name and description for each activity
-    for activity in activities:
-        name = activity.get("activityName", "No Name")
-        description = activity.get("description", "No Description")
-        print(f"Name: {name}\nDescription: {description}\n---")
+    # Get activities from the last 24 hours
+    start_datetime = datetime.datetime.combine(start_date, datetime.time.min)
+    # Fetch Strava activities and collect into a list for matching
+    strava_activities = list(strava_client.get_activities(after=start_datetime))
+
+    # Match Garmin and Strava activities by their start datetimes (within tolerance)
+    tolerance_seconds = args.tolerance_seconds
+
+    for g in garmin_activities:
+        garmin_start_time = g.get("startTimeLocal")
+        best_strava_activity = None
+        best_delta = None
+        if garmin_start_time:
+            for strava_activity in strava_activities:
+                strava_start_time = strava_activity.start_date_local
+                strava_start_time = strava_start_time.replace(tzinfo=None)
+                garmin_start_time = garmin_start_time.replace(tzinfo=None)
+
+                delta = abs((strava_start_time - garmin_start_time).total_seconds())
+                if best_strava_activity is None or delta < best_delta:
+                    best_strava_activity = strava_activity
+                    best_delta = delta
+
+        if (
+            best_strava_activity
+            and best_delta is not None
+            and best_delta <= tolerance_seconds
+        ):
+            strava_client.update_activity(
+                activity_id=best_strava_activity.id,
+                name=g.get("activityName"),
+                description=g.get("description", ""),
+            )
 
 
 if __name__ == "__main__":
