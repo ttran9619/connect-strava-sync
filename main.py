@@ -129,18 +129,61 @@ def login_to_strava() -> stravalib.Client:
     """
 
     secrets = load_secrets()
+    client_id = secrets.get("strava-app-client-id")
+    client_secret = secrets.get("strava-app-client-secret")
 
-    # If an access token is already stored, use it and skip the OAuth flow.
-    stored_access = secrets.get("strava-access-token")
-    if stored_access:
-        return stravalib.Client(access_token=stored_access)
+    if not client_id or not client_secret:
+        raise ValueError(
+            "Missing strava-app-client-id or strava-app-client-secret in .secrets.yaml"
+        )
 
-    # No stored token: proceed with authorization flow using app credentials.
+    # Check for stored tokens (both needed for refresh flow)
+    access_token = secrets.get("strava-access-token")
+    refresh_token = secrets.get("strava-refresh-token")
+    expires_at = secrets.get("strava-token-expires-at")  # epoch timestamp
+
+    # If we have both tokens and expiry info, check if refresh needed
+    if access_token and refresh_token and expires_at:
+        now = datetime.datetime.now().timestamp()
+        expires_in = int(expires_at) - now
+
+        # Refresh if expired or expires in < 1 hour
+        if expires_in < 3600:
+            try:
+                print("Refreshing Strava token...")
+                client = stravalib.Client()
+                refresh_response = client.refresh_access_token(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    refresh_token=refresh_token,
+                )
+                # Update tokens and expiry
+                access_token = refresh_response["access_token"]
+                refresh_token = refresh_response["refresh_token"]
+                expires_at = refresh_response["expires_at"]
+
+                # Save refreshed tokens
+                secrets["strava-access-token"] = access_token
+                secrets["strava-refresh-token"] = refresh_token
+                secrets["strava-token-expires-at"] = expires_at
+                with open(".secrets.yaml", "w") as f:
+                    yaml.safe_dump(secrets, f, default_flow_style=False)
+                print("Saved refreshed tokens")
+            except Exception as e:
+                print(f"Token refresh failed, falling back to re-auth: {e}")
+                access_token = None
+                refresh_token = None
+
+        # Token still valid, use it
+        if access_token:
+            return stravalib.Client(access_token=access_token)
+
+    # No stored token or refresh failed: proceed with authorization flow
     app_access = secrets.get("strava-app-client-access-token")
     client = stravalib.Client(access_token=app_access)
 
     authorize_url = client.authorization_url(
-        client_id=secrets["strava-app-client-id"],
+        client_id=client_id,
         redirect_uri="http://127.0.0.1:5000/authorization",
         scope=["read", "activity:read_all", "activity:write"],
     )
@@ -152,16 +195,22 @@ def login_to_strava() -> stravalib.Client:
     )
 
     token_response = client.exchange_code_for_token(
-        client_id=secrets["strava-app-client-id"],
-        client_secret=secrets["strava-app-client-secret"],
+        client_id=client_id,
+        client_secret=client_secret,
         code=token_code,
     )
-    # The token response above contains both an access_token and a refresh token.
+    # The token response contains access_token, refresh_token and expires_at.
+    if not isinstance(token_response, dict):
+        token_response = dict(token_response)
+
     access_token = token_response["access_token"]
-    refresh_token = token_response["refresh_token"]  # You'll need this in 6 hours
+    refresh_token = token_response["refresh_token"]
+    expires_at = token_response["expires_at"]
+
     # Persist the new tokens into .secrets.yaml while preserving other keys.
     secrets["strava-access-token"] = access_token
     secrets["strava-refresh-token"] = refresh_token
+    secrets["strava-token-expires-at"] = expires_at
     with open(".secrets.yaml", "w") as f:
         yaml.safe_dump(secrets, f, default_flow_style=False)
 
