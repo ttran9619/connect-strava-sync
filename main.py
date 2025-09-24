@@ -56,7 +56,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--start-date",
         type=validate_date,
-        help="Start date in ISO format (YYYY-MM-DD). If not provided, defaults to 7 days ago",
+        help="Start date in ISO format (YYYY-MM-DD). If not provided, defaults to 30 days ago",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=validate_date,
+        help="End date in ISO format (YYYY-MM-DD). If not provided, defaults to today",
     )
     parser.add_argument(
         "--dry-run",
@@ -194,29 +199,44 @@ def main() -> None:
 
     strava_client = login_to_strava()
 
-    # Get activities from start date until now
+    # Determine start and end dates from CLI args (defaults: start=30 days ago, end=today)
     today = datetime.date.today()
     start_date = (
         args.start_date if args.start_date else today - datetime.timedelta(days=30)
     )
-    try:
-        garmin_activities = garmin_client.get_activities_by_date(
-            start_date.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d")
-        )
-    except Exception as e:
-        print(f"Failed to fetch activities: {e}")
+    end_date = args.end_date if args.end_date else today
+
+    if end_date < start_date:
+        print("Error: --end-date must be the same or after --start-date")
         return
 
-    # Get activities from the last 24 hours
-    start_datetime = datetime.datetime.combine(start_date, datetime.time.min)
-    # Fetch Strava activities and collect into a list for matching
-    strava_activities = list(strava_client.get_activities(after=start_datetime))
+    try:
+        garmin_activities = garmin_client.get_activities_by_date(
+            start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+        )
+    except Exception as e:
+        print(f"Failed to fetch Garmin activities: {e}")
+        return
 
-    # Match Garmin and Strava activities by their start datetimes (within tolerance)
+    # Build datetimes for Strava query (inclusive range)
+    start_datetime = datetime.datetime.combine(start_date, datetime.time.min)
+    end_datetime = datetime.datetime.combine(end_date, datetime.time.max)
+
+    # Fetch Strava activities in the window
+    try:
+        strava_activities = list(
+            strava_client.get_activities(after=start_datetime, before=end_datetime)
+        )
+    except Exception as e:
+        print(f"Failed to fetch Strava activities: {e}")
+        return
+
+    # Matching tolerance
     tolerance_seconds = args.tolerance_seconds
 
     for g in garmin_activities:
         garmin_start_time = g.get("startTimeLocal")
+        garmin_start_time = datetime.datetime.fromisoformat(garmin_start_time)
         best_strava_activity = None
         best_delta = None
         if garmin_start_time:
