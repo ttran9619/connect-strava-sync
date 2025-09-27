@@ -9,6 +9,18 @@ import tempfile
 import yaml
 import zipfile
 
+log_method = "log"
+log_file_path = f"debug-{int(datetime.datetime.now().timestamp())}.log"
+
+
+def log(msg: str) -> None:
+    """Log a message to console or file based on configuration."""
+    if log_method == "log":
+        print(msg)
+    elif log_method == "file":
+        with open(log_file_path, "a") as f:
+            f.write(f"{datetime.datetime.now().isoformat()} - {msg}\n")
+
 
 def load_secrets() -> dict:
     """Load secrets from .secrets.yaml file.
@@ -100,7 +112,7 @@ def parse_args() -> argparse.Namespace:
     upload_parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="If set, do not upload activities; only print what would be uploaded",
+        help="If set, do not upload activities; only log what would be uploaded",
     )
 
     return parser.parse_args()
@@ -127,7 +139,7 @@ def login_to_garmin() -> garminconnect.Garmin:
 
     if error_string == "needs_mfa":
         mfa_code = input("Enter your MFA code: ")
-        print("Processing MFA...")
+        log("Processing MFA...")
         client.resume_login(client_state, mfa_code)
 
     # After successful login, save garth token
@@ -140,9 +152,9 @@ def login_to_garmin() -> garminconnect.Garmin:
             secrets_path = os.path.join(os.path.dirname(__file__), ".secrets.yaml")
             with open(secrets_path, "w") as f:
                 yaml.safe_dump(secrets, f)
-            print("Saved authentication token for future use")
+            log("Saved authentication token for future use")
     except Exception as e:
-        print(f"Note: Could not save authentication token: {e}")
+        log(f"Note: Could not save authentication token: {e}")
 
     return client
 
@@ -179,7 +191,7 @@ def login_to_strava() -> stravalib.Client:
         # Refresh if expired or expires in < 1 hour
         if expires_in < 3600:
             try:
-                print("Refreshing Strava token...")
+                log("Refreshing Strava token...")
                 client = stravalib.Client()
                 refresh_response = client.refresh_access_token(
                     client_id=client_id,
@@ -197,9 +209,9 @@ def login_to_strava() -> stravalib.Client:
                 secrets["strava-token-expires-at"] = expires_at
                 with open(".secrets.yaml", "w") as f:
                     yaml.safe_dump(secrets, f, default_flow_style=False)
-                print("Saved refreshed tokens")
+                log("Saved refreshed tokens")
             except Exception as e:
-                print(f"Token refresh failed, falling back to re-auth: {e}")
+                log(f"Token refresh failed, falling back to re-auth: {e}")
                 access_token = None
                 refresh_token = None
 
@@ -217,8 +229,8 @@ def login_to_strava() -> stravalib.Client:
         scope=["read", "activity:read_all", "activity:write"],
     )
 
-    print("Please visit this URL to authorize the application:")
-    print(authorize_url)
+    log("Please visit this URL to authorize the application:")
+    log(authorize_url)
     token_code = input(
         "Press Enter after you've authorized the application and paste the code..."
     )
@@ -268,7 +280,7 @@ def sync_activities(
     end_date = args.end_date if args.end_date else today
 
     if end_date < start_date:
-        print("Error: --end-date must be the same or after --start-date")
+        log("Error: --end-date must be the same or after --start-date")
         return
 
     try:
@@ -276,7 +288,7 @@ def sync_activities(
             start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
         )
     except Exception as e:
-        print(f"Failed to fetch Garmin activities: {e}")
+        log(f"Failed to fetch Garmin activities: {e}")
         return
 
     # Build datetimes for Strava query (inclusive range)
@@ -289,7 +301,7 @@ def sync_activities(
             strava_client.get_activities(after=start_datetime, before=end_datetime)
         )
     except Exception as e:
-        print(f"Failed to fetch Strava activities: {e}")
+        log(f"Failed to fetch Strava activities: {e}")
         return
 
     # Matching tolerance
@@ -353,7 +365,7 @@ def handle_upload(
     end_date = args.end_date if args.end_date else today
 
     if end_date < start_date:
-        print("Error: --end-date must be the same or after --start-date")
+        log("Error: --end-date must be the same or after --start-date")
         return
 
     try:
@@ -362,7 +374,7 @@ def handle_upload(
             start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
         )
 
-        print(
+        log(
             f"Found {len(garmin_activities)} activities between {start_date} and {end_date}"
         )
 
@@ -373,7 +385,7 @@ def handle_upload(
                 activity_id = str(activity.get("activityId", ""))
                 activity_name = activity.get("activityName", "Unknown Activity")
 
-                print(f"\nProcessing: {activity_name} (ID: {activity_id})")
+                log(f"\nProcessing: {activity_name} (ID: {activity_id})")
 
                 if args.dry_run:
                     continue
@@ -385,7 +397,7 @@ def handle_upload(
                         garminconnect.Garmin.ActivityDownloadFormat.ORIGINAL,
                     )
                     if not zip_data:
-                        print("No data received from Garmin Connect")
+                        log("No data received from Garmin Connect")
                         continue
 
                     zip_path = os.path.join(temp_dir, f"activity_{activity_id}.zip")
@@ -408,12 +420,12 @@ def handle_upload(
                             activity_files.append(os.path.join(activity_dir, file))
 
                     if not activity_files:
-                        print("No .fit files found in the activity data")
+                        log("No .fit files found in the activity data")
                         continue
 
                     # Upload each file to Strava
                     for file_path in activity_files:
-                        print(f"Uploading {os.path.basename(file_path)} to Strava...")
+                        log(f"Uploading {os.path.basename(file_path)} to Strava...")
                         with open(file_path, "rb") as f:
                             upload = strava_client.upload_activity(
                                 activity_file=f,
@@ -424,14 +436,14 @@ def handle_upload(
                                 name=activity_name,
                             )
                             upload.wait()
-                        print(f"Upload successful: {upload.activity_id}")
+                        log(f"Upload successful: {upload.activity_id}")
 
                 except Exception as e:
-                    print(f"Error processing activity {activity_id}: {e}")
+                    log(f"Error processing activity {activity_id}: {e}")
                     continue
 
     except Exception as e:
-        print(f"Error fetching activities: {e}")
+        log(f"Error fetching activities: {e}")
 
 
 def main() -> None:
@@ -446,19 +458,19 @@ def main() -> None:
 
         if "garth-token" in secrets:
             try:
-                print("Attempting to authenticate using saved token...")
+                log("Attempting to authenticate using saved token...")
                 garmin_client = garminconnect.Garmin()
                 garmin_client.login(secrets["garth-token"])
             except Exception as e:
-                print(f"Token authentication failed: {e}")
-                print("Falling back to regular login...")
+                log(f"Token authentication failed: {e}")
+                log("Falling back to regular login...")
                 garmin_client = None
 
         if garmin_client is None:
             garmin_client = login_to_garmin()
 
     except Exception as e:
-        print(f"Login to Connect failed: {e}")
+        log(f"Login to Connect failed: {e}")
         return
 
     strava_client = login_to_strava()
