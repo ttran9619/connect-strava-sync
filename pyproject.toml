@@ -9,6 +9,7 @@ dependencies = [
     "datetime>=5.5",
     "garminconnect>=0.2.30",
     "garth>=0.5.17",
+    "python-dotenv>=1.1.1",
     "pyyaml>=6.0.2",
     "stravalib>=2.4",
     "typing>=3.10.0.0",

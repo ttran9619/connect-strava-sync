@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import dotenv
 import garminconnect
 import garth
 import os
@@ -310,4 +311,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    dotenv.load_dotenv()
     main()
