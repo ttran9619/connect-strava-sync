@@ -5,7 +5,9 @@ import garminconnect
 import garth
 import os
 import stravalib
+import tempfile
 import yaml
+import zipfile
 
 
 def load_secrets() -> dict:
@@ -47,32 +49,60 @@ def parse_args() -> argparse.Namespace:
     """Parse command line arguments.
 
     Returns:
-        Namespace: Parsed command line arguments with optional start_date
+        Namespace: Parsed command line arguments
     """
     parser = argparse.ArgumentParser(
-        description="Fetch Garmin Connect activities starting from a specific date"
+        description="Sync activities between Garmin Connect and Strava"
     )
-    parser.add_argument(
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    subparsers.required = True
+
+    # Sync command - synchronize activity names and descriptions
+    sync_parser = subparsers.add_parser(
+        "sync", help="Sync activity names and descriptions from Garmin to Strava"
+    )
+    sync_parser.add_argument(
         "--start-date",
         type=validate_date,
         help="Start date in ISO format (YYYY-MM-DD). If not provided, defaults to 30 days ago",
     )
-    parser.add_argument(
+    sync_parser.add_argument(
         "--end-date",
         type=validate_date,
         help="End date in ISO format (YYYY-MM-DD). If not provided, defaults to today",
     )
-    parser.add_argument(
+    sync_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="If set, do not call Strava to update activities; only simulate and write summary",
     )
-    parser.add_argument(
+    sync_parser.add_argument(
         "--tolerance-seconds",
         type=int,
         default=10,
         help="Matching tolerance in seconds when pairing Garmin and Strava activities (default: 10)",
     )
+
+    # Upload command - upload original Garmin activity files to Strava
+    upload_parser = subparsers.add_parser(
+        "upload", help="Upload original Garmin activity files to Strava"
+    )
+    upload_parser.add_argument(
+        "--start-date",
+        type=validate_date,
+        help="Start date in ISO format (YYYY-MM-DD). If not provided, defaults to 30 days ago",
+    )
+    upload_parser.add_argument(
+        "--end-date",
+        type=validate_date,
+        help="End date in ISO format (YYYY-MM-DD). If not provided, defaults to today",
+    )
+    upload_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="If set, do not upload activities; only print what would be uploaded",
+    )
+
     return parser.parse_args()
 
 
@@ -218,35 +248,18 @@ def login_to_strava() -> stravalib.Client:
     return client
 
 
-def main() -> None:
-    """Main function to fetch and display Garmin Connect activities."""
-    args = parse_args()
+def sync_activities(
+    args: argparse.Namespace,
+    garmin_client: garminconnect.Garmin,
+    strava_client: stravalib.Client,
+) -> None:
+    """Sync activity names and descriptions from Garmin to Strava.
 
-    # Login to Garmin Connect
-    try:
-        # Try using stored token first
-        secrets = load_secrets()
-        garmin_client = None
-
-        if "garth-token" in secrets:
-            try:
-                print("Attempting to authenticate using saved token...")
-                garmin_client = garminconnect.Garmin()
-                garmin_client.login(secrets["garth-token"])
-            except Exception as e:
-                print(f"Token authentication failed: {e}")
-                print("Falling back to regular login...")
-                garmin_client = None
-
-        if garmin_client is None:
-            garmin_client = login_to_garmin()
-
-    except Exception as e:
-        print(f"Login to Connect failed: {e}")
-        return
-
-    strava_client = login_to_strava()
-
+    Args:
+        args: Command line arguments
+        garmin_client: Authenticated Garmin client
+        strava_client: Authenticated Strava client
+    """
     # Determine start and end dates from CLI args (defaults: start=30 days ago, end=today)
     today = datetime.date.today()
     start_date = (
@@ -284,30 +297,177 @@ def main() -> None:
 
     for g in garmin_activities:
         garmin_start_time = g.get("startTimeLocal")
+        if not garmin_start_time:
+            continue
+
         garmin_start_time = datetime.datetime.fromisoformat(garmin_start_time)
         best_strava_activity = None
         best_delta = None
-        if garmin_start_time:
-            for strava_activity in strava_activities:
-                strava_start_time = strava_activity.start_date_local
-                strava_start_time = strava_start_time.replace(tzinfo=None)
-                garmin_start_time = garmin_start_time.replace(tzinfo=None)
 
-                delta = abs((strava_start_time - garmin_start_time).total_seconds())
-                if best_strava_activity is None or delta < best_delta:
-                    best_strava_activity = strava_activity
-                    best_delta = delta
+        for strava_activity in strava_activities:
+            if not strava_activity.start_date_local:
+                continue
+
+            strava_start_time = strava_activity.start_date_local
+            strava_start_time = strava_start_time.replace(tzinfo=None)
+            garmin_start_time = garmin_start_time.replace(tzinfo=None)
+
+            delta = abs((strava_start_time - garmin_start_time).total_seconds())
+            if best_strava_activity is None or (
+                best_delta is not None and delta < best_delta
+            ):
+                best_strava_activity = strava_activity
+                best_delta = delta
 
         if (
             best_strava_activity
+            and best_strava_activity.id
             and best_delta is not None
             and best_delta <= tolerance_seconds
+            and not args.dry_run
         ):
             strava_client.update_activity(
                 activity_id=best_strava_activity.id,
                 name=g.get("activityName"),
                 description=g.get("description", ""),
             )
+
+
+def handle_upload(
+    args: argparse.Namespace,
+    garmin_client: garminconnect.Garmin,
+    strava_client: stravalib.Client,
+) -> None:
+    """Upload original Garmin activity files to Strava.
+
+    Args:
+        args: Command line arguments
+        garmin_client: Authenticated Garmin client
+        strava_client: Authenticated Strava client
+    """
+    # Determine start and end dates from CLI args (defaults: start=30 days ago, end=today)
+    today = datetime.date.today()
+    start_date = (
+        args.start_date if args.start_date else today - datetime.timedelta(days=30)
+    )
+    end_date = args.end_date if args.end_date else today
+
+    if end_date < start_date:
+        print("Error: --end-date must be the same or after --start-date")
+        return
+
+    try:
+        # Fetch activities in the date range
+        garmin_activities = garmin_client.get_activities_by_date(
+            start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
+        )
+
+        print(
+            f"Found {len(garmin_activities)} activities between {start_date} and {end_date}"
+        )
+
+        # Create a temporary directory for all activities
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for activity in garmin_activities:
+                activity_id = str(activity.get("activityId", ""))
+                activity_name = activity.get("activityName", "Unknown Activity")
+
+                print(f"\nProcessing: {activity_name} (ID: {activity_id})")
+
+                if args.dry_run:
+                    continue
+
+                # Download the activity data
+                try:
+                    zip_data = garmin_client.download_activity(
+                        activity_id,
+                        garminconnect.Garmin.ActivityDownloadFormat.ORIGINAL,
+                    )
+                    if not zip_data:
+                        print("No data received from Garmin Connect")
+                        continue
+
+                    zip_path = os.path.join(temp_dir, f"activity_{activity_id}.zip")
+
+                    # Save and extract the zip file
+                    with open(zip_path, "wb") as f:
+                        f.write(zip_data)
+
+                    # Create a subdirectory for this activity
+                    activity_dir = os.path.join(temp_dir, str(activity_id))
+                    os.makedirs(activity_dir, exist_ok=True)
+
+                    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                        zip_ref.extractall(activity_dir)
+
+                    # Look for .fit files
+                    activity_files = []
+                    for file in os.listdir(activity_dir):
+                        if file.endswith(".fit"):
+                            activity_files.append(os.path.join(activity_dir, file))
+
+                    if not activity_files:
+                        print("No .fit files found in the activity data")
+                        continue
+
+                    # Upload each file to Strava
+                    for file_path in activity_files:
+                        print(f"Uploading {os.path.basename(file_path)} to Strava...")
+                        with open(file_path, "rb") as f:
+                            upload = strava_client.upload_activity(
+                                activity_file=f,
+                                data_type=os.path.splitext(file_path)[1][
+                                    1:
+                                ],  # Remove the dot
+                                private=False,
+                                name=activity_name,
+                            )
+                            upload.wait()
+                        print(f"Upload successful: {upload.activity_id}")
+
+                except Exception as e:
+                    print(f"Error processing activity {activity_id}: {e}")
+                    continue
+
+    except Exception as e:
+        print(f"Error fetching activities: {e}")
+
+
+def main() -> None:
+    """Main function to handle different commands."""
+    args = parse_args()
+
+    # Login to Garmin Connect
+    try:
+        # Try using stored token first
+        secrets = load_secrets()
+        garmin_client = None
+
+        if "garth-token" in secrets:
+            try:
+                print("Attempting to authenticate using saved token...")
+                garmin_client = garminconnect.Garmin()
+                garmin_client.login(secrets["garth-token"])
+            except Exception as e:
+                print(f"Token authentication failed: {e}")
+                print("Falling back to regular login...")
+                garmin_client = None
+
+        if garmin_client is None:
+            garmin_client = login_to_garmin()
+
+    except Exception as e:
+        print(f"Login to Connect failed: {e}")
+        return
+
+    strava_client = login_to_strava()
+
+    # Handle different commands
+    if args.command == "sync":
+        sync_activities(args, garmin_client, strava_client)
+    elif args.command == "upload":
+        handle_upload(args, garmin_client, strava_client)
 
 
 if __name__ == "__main__":
