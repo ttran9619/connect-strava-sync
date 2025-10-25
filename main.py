@@ -1,12 +1,10 @@
-import garminconnect
-import datetime
-import yaml
-import os
 import argparse
-import json
-from typing import Dict, Any, Optional, List
+import datetime
+import garminconnect
 import garth
+import os
 import stravalib
+import yaml
 
 
 def load_secrets() -> dict:
