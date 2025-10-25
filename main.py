@@ -6,6 +6,7 @@ import garth
 import os
 import stravalib
 import tempfile
+import time
 import yaml
 import zipfile
 
@@ -113,6 +114,11 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="If set, do not upload activities; only log what would be uploaded",
+    )
+    upload_parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="If set, don't wait for upload completion. This avoids read requests.",
     )
 
     return parser.parse_args()
@@ -435,8 +441,14 @@ def handle_upload(
                                 private=False,
                                 name=activity_name,
                             )
-                            upload.wait()
-                        log(f"Upload successful: {upload.activity_id}")
+                            if args.sleep:
+                                log("Sleeping for 5 seconds...")
+                                time.sleep(5)
+                            else:
+                                # wait immediately issues a request to check if the upload is complete. Sleep to avoid an immediate read request that will always fail.
+                                time.sleep(5)
+                                upload.wait(poll_interval=10)
+                        log("Upload complete")
 
                 except Exception as e:
                     log(f"Error processing activity {activity_id}: {e}")
