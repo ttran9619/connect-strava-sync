@@ -77,7 +77,7 @@ def parse_args() -> argparse.Namespace:
     sync_parser.add_argument(
         "--start-date",
         type=validate_date,
-        help="Start date in ISO format (YYYY-MM-DD). If not provided, defaults to 30 days ago",
+        help="Start date in ISO format (YYYY-MM-DD). If not provided, defaults to 7 days ago",
     )
     sync_parser.add_argument(
         "--end-date",
@@ -103,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     upload_parser.add_argument(
         "--start-date",
         type=validate_date,
-        help="Start date in ISO format (YYYY-MM-DD). If not provided, defaults to 30 days ago",
+        help="Start date in ISO format (YYYY-MM-DD). If not provided, defaults to 7 days ago",
     )
     upload_parser.add_argument(
         "--end-date",
@@ -278,10 +278,10 @@ def sync_activities(
         garmin_client: Authenticated Garmin client
         strava_client: Authenticated Strava client
     """
-    # Determine start and end dates from CLI args (defaults: start=30 days ago, end=today)
+    # Determine start and end dates from CLI args (defaults: start=7 days ago, end=today)
     today = datetime.date.today()
     start_date = (
-        args.start_date if args.start_date else today - datetime.timedelta(days=30)
+        args.start_date if args.start_date else today - datetime.timedelta(days=7)
     )
     end_date = args.end_date if args.end_date else today
 
@@ -363,10 +363,10 @@ def handle_upload(
         garmin_client: Authenticated Garmin client
         strava_client: Authenticated Strava client
     """
-    # Determine start and end dates from CLI args (defaults: start=30 days ago, end=today)
+    # Determine start and end dates from CLI args (defaults: start=7 days ago, end=today)
     today = datetime.date.today()
     start_date = (
-        args.start_date if args.start_date else today - datetime.timedelta(days=30)
+        args.start_date if args.start_date else today - datetime.timedelta(days=7)
     )
     end_date = args.end_date if args.end_date else today
 
