@@ -23,20 +23,21 @@ def log(msg: str) -> None:
             f.write(f"{datetime.datetime.now().isoformat()} - {msg}\n")
 
 
-def load_secrets() -> dict:
-    """Load secrets from .secrets.yaml file.
+def load_secrets(secrets_file_path: str) -> dict:
+    """Load secrets from the specified secrets file path.
+
+    Args:
+        secrets_file_path: Path to the secrets YAML file
 
     Returns:
         dict: Dictionary containing credentials and tokens
 
     Raises:
-        FileNotFoundError: If .secrets.yaml file is missing
+        FileNotFoundError: If the secrets file is missing
     """
-    secrets_path = os.path.join(os.path.dirname(__file__), ".secrets.yaml")
-    if not os.path.exists(secrets_path):
-        raise FileNotFoundError("Missing .secrets.yaml file")
-
-    with open(secrets_path, "r") as f:
+    if not os.path.exists(secrets_file_path):
+        raise FileNotFoundError(f"Missing secrets file: {secrets_file_path}")
+    with open(secrets_file_path, "r") as f:
         return yaml.safe_load(f) or {}
 
 
@@ -66,6 +67,12 @@ def parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(
         description="Sync activities between Garmin Connect and Strava"
+    )
+    parser.add_argument(
+        "--secrets-file",
+        type=str,
+        default=".secrets.yaml",
+        help="Path to the secrets YAML file (default: .secrets.yaml in script directory)",
     )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
     subparsers.required = True
@@ -124,8 +131,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def login_to_garmin() -> garminconnect.Garmin:
+def login_to_garmin(secrets_file_path: str) -> garminconnect.Garmin:
     """Login to Garmin Connect using stored credentials.
+
+    Args:
+        secrets_file_path: Path to the secrets YAML file
 
     Returns:
         garminconnect.Garmin: Authenticated Garmin client
@@ -133,7 +143,7 @@ def login_to_garmin() -> garminconnect.Garmin:
     Raises:
         Exception: If authentication fails
     """
-    secrets = load_secrets()
+    secrets = load_secrets(secrets_file_path)
     username = secrets.get("garmin-username")
     password = secrets.get("garmin-password")
 
@@ -155,8 +165,7 @@ def login_to_garmin() -> garminconnect.Garmin:
         token_data = g.dumps()
         if token_data:  # Only save if we got valid token data
             secrets["garth-token"] = token_data
-            secrets_path = os.path.join(os.path.dirname(__file__), ".secrets.yaml")
-            with open(secrets_path, "w") as f:
+            with open(secrets_file_path, "w") as f:
                 yaml.safe_dump(secrets, f)
             log("Saved authentication token for future use")
     except Exception as e:
@@ -165,8 +174,11 @@ def login_to_garmin() -> garminconnect.Garmin:
     return client
 
 
-def login_to_strava() -> stravalib.Client:
+def login_to_strava(secrets_file_path: str) -> stravalib.Client:
     """Login to Strava using stored credentials.
+
+    Args:
+        secrets_file_path: Path to the secrets YAML file
 
     Returns:
         stravalib.Client: Authenticated Strava client
@@ -175,7 +187,7 @@ def login_to_strava() -> stravalib.Client:
         Exception: If authentication fails
     """
 
-    secrets = load_secrets()
+    secrets = load_secrets(secrets_file_path)
     client_id = secrets.get("strava-app-client-id")
     client_secret = secrets.get("strava-app-client-secret")
 
@@ -213,7 +225,7 @@ def login_to_strava() -> stravalib.Client:
                 secrets["strava-access-token"] = access_token
                 secrets["strava-refresh-token"] = refresh_token
                 secrets["strava-token-expires-at"] = expires_at
-                with open(".secrets.yaml", "w") as f:
+                with open(secrets_file_path, "w") as f:
                     yaml.safe_dump(secrets, f, default_flow_style=False)
                 log("Saved refreshed tokens")
             except Exception as e:
@@ -258,7 +270,7 @@ def login_to_strava() -> stravalib.Client:
     secrets["strava-access-token"] = access_token
     secrets["strava-refresh-token"] = refresh_token
     secrets["strava-token-expires-at"] = expires_at
-    with open(".secrets.yaml", "w") as f:
+    with open(secrets_file_path, "w") as f:
         yaml.safe_dump(secrets, f, default_flow_style=False)
 
     # Return a client authorized with the newly exchanged access token.
@@ -461,11 +473,12 @@ def handle_upload(
 def main() -> None:
     """Main function to handle different commands."""
     args = parse_args()
+    secrets_file_path = args.secrets_file
 
     # Login to Garmin Connect
     try:
         # Try using stored token first
-        secrets = load_secrets()
+        secrets = load_secrets(secrets_file_path)
         garmin_client = None
 
         if "garth-token" in secrets:
@@ -479,13 +492,13 @@ def main() -> None:
                 garmin_client = None
 
         if garmin_client is None:
-            garmin_client = login_to_garmin()
+            garmin_client = login_to_garmin(secrets_file_path)
 
     except Exception as e:
         log(f"Login to Connect failed: {e}")
         return
 
-    strava_client = login_to_strava()
+    strava_client = login_to_strava(secrets_file_path)
 
     # Handle different commands
     if args.command == "sync":
