@@ -15,3 +15,10 @@ dependencies = [
     "stravalib>=2.4",
     "typing>=3.10.0.0",
 ]
+
+[project.scripts]
+connect-strava-sync = "connect_strava_sync:main"
+
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
