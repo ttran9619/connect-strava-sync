@@ -455,13 +455,13 @@ def handle_upload(
                                 name=activity_name,
                                 description=activity_description,
                             )
-                            if args.sleep:
-                                log("Sleeping for 5 seconds...")
-                                time.sleep(5)
+                            if args.no_wait:
+                                log(
+                                    "Upload queued (--no-wait); skipping completion wait and description update"
+                                )
                             else:
-                                # wait immediately issues a request to check if the upload is complete. Sleep to avoid an immediate read request that will always fail.
-                                time.sleep(5)
-                                upload.wait(poll_interval=10)
+                                time.sleep(5)  # Initial wait before polling to avoid an immediate failure on the first status check
+                                upload = upload.wait(poll_interval=10)
                         log("Upload complete")
 
                 except Exception as e:
