@@ -402,6 +402,7 @@ def handle_upload(
             for activity in garmin_activities:
                 activity_id = str(activity.get("activityId", ""))
                 activity_name = activity.get("activityName", "Unknown Activity")
+                activity_description = activity.get("description", "")
 
                 log(f"\nProcessing: {activity_name} (ID: {activity_id})")
 
@@ -452,6 +453,7 @@ def handle_upload(
                                 ],  # Remove the dot
                                 private=False,
                                 name=activity_name,
+                                description=activity_description,
                             )
                             if args.sleep:
                                 log("Sleeping for 5 seconds...")
