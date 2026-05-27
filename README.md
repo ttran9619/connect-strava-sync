@@ -116,6 +116,7 @@ connect-strava-sync upload
 - `--end-date YYYY-MM-DD`: End date (default: today)
 - `--dry-run`: Preview uploads without actually uploading
 - `--no-wait`: Don't wait for upload completion (faster)
+- `--semi-private-as-private`: Treat Garmin semi-private audience labels (followers/connections/friends) as private. By default these are treated as public.
 - `--secrets-file PATH`: Path to secrets file (default: `.secrets.yaml`)
 
 **Examples:**
@@ -129,6 +130,9 @@ connect-strava-sync upload --dry-run
 
 # Upload without waiting for completion
 connect-strava-sync upload --no-wait
+
+# Treat Garmin semi-private audience labels as private on Strava
+connect-strava-sync upload --semi-private-as-private
 ```
 
 ## How It Works

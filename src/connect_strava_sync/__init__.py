@@ -59,6 +59,79 @@ def validate_date(date_str: str) -> datetime.date:
         )
 
 
+def _extract_nested_value(data: dict, path: tuple[str, ...]) -> object | None:
+    """Return a nested value from a dict path when present."""
+    current: object = data
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
+def _strava_private_from_garmin_activity(
+    activity: dict,
+    treat_semi_private_as_private: bool = False,
+) -> bool | None:
+    """Map Garmin activity privacy metadata to Strava's private flag.
+
+    Args:
+        activity: Garmin activity payload.
+        treat_semi_private_as_private: If True, audience labels like "followers"
+            are mapped to private. If False, they are mapped to public.
+
+    Returns:
+        bool | None: True/False when privacy could be inferred, otherwise None.
+    """
+    candidate_paths = (
+        ("accessControlRuleDTO", "typeKey"),
+        ("rule", "typeKey"),
+        ("accessControlRule", "typeKey"),
+        ("privacy", "typeKey"),
+        ("privacy",),
+        ("visibility",),
+        ("isPrivate",),
+        ("private",),
+    )
+
+    value = None
+    for path in candidate_paths:
+        value = _extract_nested_value(activity, path)
+        if value is not None:
+            break
+
+    if value is None:
+        return None
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"private", "only_me", "me", "self"}:
+            return True
+        if normalized in {
+            "public",
+            "everyone",
+            "all",
+        }:
+            return False
+        # Garmin may return audience labels that are not strictly private/public.
+        if normalized in {
+            "followers",
+            "following",
+            "connections",
+            "friends",
+            "contacts",
+        }:
+            return treat_semi_private_as_private
+
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments.
 
@@ -126,6 +199,14 @@ def parse_args() -> argparse.Namespace:
         "--no-wait",
         action="store_true",
         help="If set, don't wait for upload completion. This avoids read requests.",
+    )
+    upload_parser.add_argument(
+        "--semi-private-as-private",
+        action="store_true",
+        help=(
+            "If set, Garmin audience labels like followers/connections are uploaded "
+            "to Strava as private. By default these labels are treated as public."
+        ),
     )
 
     return parser.parse_args()
@@ -403,8 +484,27 @@ def handle_upload(
                 activity_id = str(activity.get("activityId", ""))
                 activity_name = activity.get("activityName", "Unknown Activity")
                 activity_description = activity.get("description", "")
+                private_value = _strava_private_from_garmin_activity(
+                    activity,
+                    treat_semi_private_as_private=args.semi_private_as_private,
+                )
+
+                # Fallback to full activity details if list metadata did not include privacy.
+                if private_value is None and activity_id:
+                    try:
+                        activity_details = garmin_client.get_activity(activity_id)
+                        private_value = _strava_private_from_garmin_activity(
+                            activity_details,
+                            treat_semi_private_as_private=args.semi_private_as_private,
+                        )
+                    except Exception:
+                        private_value = None
+
+                # Default to public when Garmin privacy cannot be inferred.
+                is_private = private_value if private_value is not None else False
 
                 log(f"\nProcessing: {activity_name} (ID: {activity_id})")
+                log(f"Garmin privacy mapped to Strava private={is_private}")
 
                 if args.dry_run:
                     continue
@@ -451,7 +551,7 @@ def handle_upload(
                                 data_type=os.path.splitext(file_path)[1][
                                     1:
                                 ],  # Remove the dot
-                                private=False,
+                                private=is_private,
                                 name=activity_name,
                                 description=activity_description,
                             )
@@ -460,7 +560,9 @@ def handle_upload(
                                     "Upload queued (--no-wait); skipping completion wait and description update"
                                 )
                             else:
-                                time.sleep(5)  # Initial wait before polling to avoid an immediate failure on the first status check
+                                time.sleep(
+                                    5
+                                )  # Initial wait before polling to avoid an immediate failure on the first status check
                                 upload = upload.wait(poll_interval=10)
                         log("Upload complete")
 
